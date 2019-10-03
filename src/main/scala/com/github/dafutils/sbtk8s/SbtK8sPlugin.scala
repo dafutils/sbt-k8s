@@ -12,28 +12,39 @@ object SbtK8sPlugin extends AutoPlugin {
 
   private def resolveManifests = Def.task {
     val manifestsRoot = k8sManifestsRootDirectory.value
-    require(manifestsRoot.isDirectory, "The specified paths is not a directory")
+    require(manifestsRoot.isDirectory, s"The specified manifest root path [${manifestsRoot.getAbsolutePath}] is not a directory")
     manifestsRoot.listFiles().toSeq
     
   }
 
   private def k8sDeployTask = Def.taskDyn {
     Def.task {
+      val logger = sbt.Keys.streams.value.log
       val k8sManifests = resolveManifests.value
       import scala.sys.process._
-      k8sManifests.map(manifest =>
+      val creationResults = k8sManifests.map(manifest =>
         manifest -> (s"kubectl --context=${k8sContext.value} create -f ${manifest.getAbsolutePath}" !)
       )
+      
+      creationResults
+        .filter{case (_, exitCode) => exitCode != 0}
+        .map(_._1)
+        .foreach(file => logger.log(Level.Error, s"Error deploying manifest in ${file.getAbsolutePath}"))
     }
   }
 
   private def k8sUndeployTask = Def.taskDyn {
     Def.task {
+      val logger = sbt.Keys.streams.value.log
       import scala.sys.process._
       val k8sManifests = resolveManifests.value
-      k8sManifests.foreach(manifest =>
+      val deletionResults = k8sManifests.map(manifest =>
         manifest -> (s"kubectl --context=${k8sContext.value} delete -f ${manifest.getAbsolutePath}" !)
       )
+      deletionResults
+        .filter{case (_, exitCode) => exitCode != 0}
+        .map(_._1)
+        .foreach(file => logger.log(Level.Error, s"Error removing objects from  manifest in ${file.getAbsolutePath}"))
     }
   }
 
@@ -44,8 +55,8 @@ object SbtK8sPlugin extends AutoPlugin {
   override lazy val projectSettings: Seq[Setting[_]] = Seq(
     k8sContext := "non-existant",
     k8sManifestsRootDirectory := file("non-existant"),
-    k8sDeploy := k8sDeployTask.value,
-    k8sRedeploy := k8sReDeployTask.value,
+    k8sDeploy := Def.sequential(k8sCreateDockerImages, k8sDeployTask).value,
+    k8sRedeploy := Def.sequential(k8sCreateDockerImages, k8sReDeployTask).value,
     k8sTeardown := k8sUndeployTask.value
   )
 }
